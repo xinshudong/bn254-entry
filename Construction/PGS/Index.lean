@@ -1,0 +1,88 @@
+/-
+This file defines the Plan B fixed-key permutation index.
+One independent uniform permutation is named per (gate, output block); nothing is shared and
+no tweak is ever applied, so the construction queries each index at most once.
+The plan source is `2026-09-17-planB.md`, section D.6.
+-/
+
+import Construction.ArgoMAC.EncPRF
+import Construction.PGS.Elements
+
+namespace Kriterion.ArgoMAC.PlanB
+
+open Cryptography
+
+/-- The public fixed-key permutation index of the projectivized garbling scheme.
+
+The `hot` and `scale` families are deliberately rectangular: at fold step `j` only `2 ^ j`
+one-hot entries exist, the last chunk has a single fold step and four switches, and no lane
+uses more than `pointElementCountX` of the `elementCountX` element slots (the curve lanes use
+three and two of them). Unqueried indices
+cost nothing in the error budget and buy a derived `Fintype` with no dependent arguments. -/
+inductive FixedIndex
+  /-- `bin-to-hot` fold masks: **two** independent permutations per one-hot entry per fold
+  step, named by the `half` bit. The repaired fold step (Task 34a) is the sum of the two
+  permutation images `π_{i₀}(Z) ^^^ π_{i₁}(Z)`, so that neither the step material nor its free
+  XOR with the parent is a single permutation image. -/
+  | hot (lane : Lane) (chunk : Fin chunkCount) (fold : Fin chunkBits)
+      (entry : Fin (2 ^ chunkBits)) (half : Bool)
+  /-- `scale-hot` switch masks: one block per (switch, element, block). -/
+  | scale (lane : Lane) (chunk : Fin chunkCount) (switch : Fin (2 ^ chunkBits))
+      (element : Fin elementCountX) (block : Fin 3)
+  /-- Doubling-exception gadget: one permutation per (digit, coordinate, label position). -/
+  | gadget (digit : Fin digitCount) (coord : Coord) (position : Fin coordinateBits)
+deriving DecidableEq, Fintype
+
+/-- The encryption-PRF index is unchanged from the baseline: the gate protects the 508 input
+labels, not the per-element offsets. -/
+abbrev EncIndex := EncPRF.PermutationIndex
+
+/-- `#FixedIndex = 4 * 127 * 2 * 2 ^ 2 * 2 + 4 * 127 * 2 ^ 2 * 458 * 3 + 91 * 2 * 254`.
+
+The `hot` and `scale` families run over the **four** lanes (two switch systems on each of the
+two coordinates), not the two coordinates. The `hot` family carries the extra `half : Bool`
+of the repaired two-image fold step, so it is `8128` instead of `4064`; the `scale`
+family (`2791968`) and the `gadget` family (`46228`) are unchanged. The count is *not* a
+scored metric and enters no error term: the budget counts construction queries per index, and
+each of the two halves is still queried exactly once.
+
+The proof goes through the derived proxy equivalence and the cardinality of finite products
+and sums; no element of the type is ever enumerated. -/
+theorem card_fixedIndex : Fintype.card FixedIndex = 2846324 := by
+  rw [← Fintype.card_congr FixedIndex.proxyTypeEquiv]
+  simp only [Fintype.card_sum, Fintype.card_sigma, Fintype.card_fin, Finset.sum_const,
+    Finset.card_univ, smul_eq_mul, card_lane, card_coord, Fintype.card_bool]
+  norm_num [chunkCount, chunkBits, elementCountX, digitCount, coordinateBits]
+
+/-- `#EncIndex = 2 * 254`. -/
+theorem card_encIndex : Fintype.card EncIndex = 508 := by
+  rw [Fintype.card_prod, Fintype.card_fin]
+  rfl
+
+/-- The `hot` index of a fold step, taking the step and the entry as natural numbers.
+Both arguments are in range at every call site of the fold (`fold < chunkBits` because the
+widest chunk is `chunkBits` wide, and `entry < 2 ^ fold ≤ 2 ^ (chunkBits - 1)`), so the
+reduction never identifies two distinct gates. -/
+def hotIndexNat (lane : Lane) (chunk : Fin chunkCount) (fold entry : Nat) (half : Bool) :
+    FixedIndex :=
+  .hot lane chunk ⟨fold % chunkBits, Nat.mod_lt _ chunkBits_pos⟩
+    ⟨entry % 2 ^ chunkBits, Nat.mod_lt _ twoPowChunkBits_pos⟩ half
+
+/-- The `scale` index of a switch, taking the switch as a natural number. -/
+def scaleIndexNat (lane : Lane) (chunk : Fin chunkCount) (switch : Nat)
+    (element : Fin elementCountX) (block : Fin 3) : FixedIndex :=
+  .scale lane chunk ⟨switch % 2 ^ chunkBits, Nat.mod_lt _ twoPowChunkBits_pos⟩ element block
+
+theorem hotIndexNat_eq (lane : Lane) (chunk : Fin chunkCount) (fold entry : Nat)
+    (half : Bool) (hfold : fold < chunkBits) (hentry : entry < 2 ^ chunkBits) :
+    hotIndexNat lane chunk fold entry half
+      = .hot lane chunk ⟨fold, hfold⟩ ⟨entry, hentry⟩ half := by
+  simp only [hotIndexNat, Nat.mod_eq_of_lt hfold, Nat.mod_eq_of_lt hentry]
+
+theorem scaleIndexNat_eq (lane : Lane) (chunk : Fin chunkCount) (switch : Nat)
+    (element : Fin elementCountX) (block : Fin 3) (hswitch : switch < 2 ^ chunkBits) :
+    scaleIndexNat lane chunk switch element block
+      = .scale lane chunk ⟨switch, hswitch⟩ element block := by
+  simp only [scaleIndexNat, Nat.mod_eq_of_lt hswitch]
+
+end Kriterion.ArgoMAC.PlanB
